@@ -1,17 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  Sun, Cloud, CloudRain, Droplets, Thermometer, Clock, MapPin, 
-  AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Plane, Navigation,
-  Plus, Search, X, Trash2
+import {
+  Sun, Cloud, CloudRain, Droplets, Thermometer, MapPin,
+  RefreshCw, Plane, Navigation,
+  Plus, Search, X, Calendar
 } from 'lucide-react';
-import { format, addHours, isSameHour, parseISO, differenceInHours } from 'date-fns';
+import { format, addDays, isSameDay, parseISO, startOfDay, isToday, isTomorrow } from 'date-fns';
 import { ja } from 'date-fns/locale';
-import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
-  ResponsiveContainer 
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { WeatherData, ForecastPoint, Location } from './types/weather';
+import { WeatherData, Location } from './types/weather';
 import { getWeatherIcon, getWeatherDescription } from './utils/weatherUtils';
 
 const STORAGE_KEY = 'travel_weather_locations';
@@ -23,15 +23,14 @@ export default function App() {
   const [currentLocation, setCurrentLocation] = useState<Location | null>(null);
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
   const [savedLocations, setSavedLocations] = useState<Location[]>([]);
-  const [selectedHourOffset, setSelectedHourOffset] = useState(3);
-  
+  const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
+
   // Search states
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Location[]>([]);
   const [isSearchingApi, setIsSearchingApi] = useState(false);
 
-  // Load saved locations from localStorage
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -43,7 +42,6 @@ export default function App() {
     }
   }, []);
 
-  // Save locations to localStorage
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(savedLocations));
   }, [savedLocations]);
@@ -82,7 +80,6 @@ export default function App() {
           fetchWeather(loc);
         },
         () => {
-          // If geolocation fails, try to select the first saved location or show error
           if (savedLocations.length > 0) {
             handleLocationChange(savedLocations[0]);
           } else {
@@ -98,7 +95,7 @@ export default function App() {
 
   const handleLocationChange = (loc: Location) => {
     setSelectedLocation(loc);
-    setSelectedHourOffset(3);
+    setSelectedDate(startOfDay(new Date()));
     fetchWeather(loc);
     setIsSearching(false);
   };
@@ -146,48 +143,52 @@ export default function App() {
     }
   };
 
-  const maxOffset = selectedLocation?.isCurrent ? 24 : 168;
+  const availableDays = useMemo(() => {
+    const days = selectedLocation?.isCurrent ? 3 : 7;
+    return Array.from({ length: days }, (_, i) => startOfDay(addDays(new Date(), i)));
+  }, [selectedLocation]);
 
-  const forecastPoints = useMemo(() => {
-    if (!weatherData) return [];
-    const now = new Date();
-    const offsets = [1, 2, 6, selectedHourOffset];
-    return offsets.map(offset => {
-      const targetTime = addHours(now, offset);
-      const index = weatherData.hourly.time.findIndex(t => isSameHour(parseISO(t), targetTime));
-      if (index === -1) return null;
-      return {
-        time: targetTime,
-        temp: weatherData.hourly.temperature_2m[index],
-        precip: weatherData.hourly.precipitation_probability[index],
-        code: weatherData.hourly.weather_code[index],
-        label: offset === selectedHourOffset ? `${offset}時間後` : `${offset}時間後`
-      } as ForecastPoint;
-    }).filter(Boolean) as ForecastPoint[];
-  }, [weatherData, selectedHourOffset]);
+  const formatDateLabel = (date: Date) => {
+    if (isToday(date)) return '今日';
+    if (isTomorrow(date)) return '明日';
+    return format(date, 'M/d(E)', { locale: ja });
+  };
 
-  const chartData = useMemo(() => {
+  const dayHourlyForecast = useMemo(() => {
     if (!weatherData) return [];
-    const now = new Date();
-    const limit = selectedLocation?.isCurrent ? 24 : 72;
     return weatherData.hourly.time
       .map((time, i) => ({
         time: parseISO(time),
-        displayTime: format(parseISO(time), 'HH:mm'),
         temp: weatherData.hourly.temperature_2m[i],
         precip: weatherData.hourly.precipitation_probability[i],
+        code: weatherData.hourly.weather_code[i],
       }))
-      .filter(d => d.time >= now && differenceInHours(d.time, now) <= limit);
-  }, [weatherData, selectedLocation]);
+      .filter(d => isSameDay(d.time, selectedDate));
+  }, [weatherData, selectedDate]);
 
-  const adjustOffset = (amount: number) => {
-    setSelectedHourOffset(prev => {
-      const next = prev + amount;
-      if (next < 1) return 1;
-      if (next > maxOffset) return maxOffset;
-      return next;
+  const chartData = useMemo(() => {
+    return dayHourlyForecast.map(d => ({
+      displayTime: format(d.time, 'H時'),
+      temp: d.temp,
+      precip: d.precip,
+    }));
+  }, [dayHourlyForecast]);
+
+  const daySummary = useMemo(() => {
+    if (dayHourlyForecast.length === 0) return null;
+    const temps = dayHourlyForecast.map(d => d.temp);
+    const maxTemp = Math.max(...temps);
+    const minTemp = Math.min(...temps);
+    const maxPrecip = Math.max(...dayHourlyForecast.map(d => d.precip));
+    const daytimeHours = dayHourlyForecast.filter(d => {
+      const h = d.time.getHours();
+      return h >= 6 && h <= 18;
     });
-  };
+    const dominantCode = daytimeHours.length > 0
+      ? daytimeHours[Math.floor(daytimeHours.length / 2)].code
+      : dayHourlyForecast[0]?.code;
+    return { maxTemp, minTemp, maxPrecip, dominantCode };
+  }, [dayHourlyForecast]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-24">
@@ -200,7 +201,7 @@ export default function App() {
             </div>
             <span className="font-bold text-lg tracking-tight">TravelWeather</span>
           </div>
-          <button 
+          <button
             onClick={() => setIsSearching(true)}
             className="p-2 bg-slate-50 rounded-full text-slate-400 hover:text-blue-500 transition-colors"
           >
@@ -212,16 +213,14 @@ export default function App() {
       <main className="max-w-md mx-auto px-4 pt-6 space-y-6">
         {/* Location Selector */}
         <section className="space-y-3">
-          <div className="flex items-center justify-between px-1">
-            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest">拠点を選択</h2>
-          </div>
+          <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest px-1">拠点を選択</h2>
           <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-4 px-4">
             {currentLocation && (
               <button
                 onClick={() => handleLocationChange(currentLocation)}
                 className={`flex-shrink-0 px-4 py-2.5 rounded-2xl text-sm font-bold transition-all border flex items-center gap-2 ${
-                  selectedLocation?.id === 'current' 
-                    ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100' 
+                  selectedLocation?.id === 'current'
+                    ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100'
                     : 'bg-white text-slate-600 border-slate-100'
                 }`}
               >
@@ -234,15 +233,15 @@ export default function App() {
                 <button
                   onClick={() => handleLocationChange(loc)}
                   className={`px-4 py-2.5 rounded-2xl text-sm font-bold transition-all border flex items-center gap-2 ${
-                    selectedLocation?.id === loc.id 
-                      ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100' 
+                    selectedLocation?.id === loc.id
+                      ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100'
                       : 'bg-white text-slate-600 border-slate-100'
                   }`}
                 >
                   <Plane className="w-3 h-3" />
                   {loc.name}
                 </button>
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); removeLocation(loc.id); }}
                   className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
                 >
@@ -269,7 +268,7 @@ export default function App() {
           <>
             {/* Current Status Card */}
             {weatherData?.current_weather && (
-              <motion.div 
+              <motion.div
                 key={selectedLocation?.id}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -305,82 +304,84 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* Hourly Forecast */}
+            {/* Date Selector */}
             <section className="space-y-3">
-              <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest px-1">ピンポイント予報</h2>
-              <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar -mx-4 px-4">
-                {forecastPoints.map((point, idx) => (
-                  <div 
-                    key={idx}
-                    className={`flex-shrink-0 w-32 p-4 rounded-3xl border transition-all ${
-                      idx === 3 ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-100' : 'bg-white border-slate-100'
-                    }`}
-                  >
-                    <p className={`text-[10px] font-bold uppercase mb-3 ${idx === 3 ? 'text-blue-200' : 'text-slate-400'}`}>
-                      {point.label}
-                    </p>
-                    <div className="flex items-center justify-between mb-2">
-                      {getWeatherIcon(point.code)}
-                      <span className="text-xl font-bold">{Math.round(point.temp)}°</span>
+              <div className="flex items-center gap-2 px-1">
+                <Calendar className="w-4 h-4 text-blue-500" />
+                <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest">日付を選択</h2>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-4 px-4">
+                {availableDays.map((date) => {
+                  const isSelected = isSameDay(date, selectedDate);
+                  return (
+                    <button
+                      key={date.toISOString()}
+                      onClick={() => setSelectedDate(date)}
+                      className={`flex-shrink-0 px-4 py-2.5 rounded-2xl text-sm font-bold transition-all border ${
+                        isSelected
+                          ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100'
+                          : 'bg-white text-slate-600 border-slate-100'
+                      }`}
+                    >
+                      {formatDateLabel(date)}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* Day Summary */}
+            {daySummary && (
+              <motion.div
+                key={selectedDate.toISOString()}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white rounded-[32px] p-5 border border-slate-100 shadow-sm"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {getWeatherIcon(daySummary.dominantCode)}
+                    <div>
+                      <p className="font-bold text-slate-700">{getWeatherDescription(daySummary.dominantCode)}</p>
+                      <p className="text-xs text-slate-400 font-bold">{format(selectedDate, 'M月d日(E)', { locale: ja })}</p>
                     </div>
-                    <p className={`text-xs font-bold mb-3 truncate ${idx === 3 ? 'text-blue-50' : 'text-slate-600'}`}>
-                      {getWeatherDescription(point.code)}
+                  </div>
+                  <div className="text-right">
+                    <p className="text-lg font-black">
+                      <span className="text-red-400">{Math.round(daySummary.maxTemp)}°</span>
+                      <span className="text-slate-300 mx-1">/</span>
+                      <span className="text-blue-400">{Math.round(daySummary.minTemp)}°</span>
                     </p>
-                    <div className={`flex items-center gap-1 text-[10px] font-bold ${idx === 3 ? 'text-blue-100' : 'text-blue-500'}`}>
-                      <Droplets className="w-3 h-3" />
+                    <div className="flex items-center gap-1 justify-end mt-1">
+                      <Droplets className="w-3 h-3 text-blue-400" />
+                      <span className="text-xs font-bold text-blue-500">{daySummary.maxPrecip}%</span>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Hourly Forecast for Selected Day */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest px-1">時間帯の予報</h2>
+              <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar -mx-4 px-4">
+                {dayHourlyForecast.map((point, idx) => (
+                  <div
+                    key={idx}
+                    className="flex-shrink-0 w-20 p-3 rounded-3xl border bg-white border-slate-100 flex flex-col items-center gap-2"
+                  >
+                    <p className="text-[10px] font-bold text-slate-400">
+                      {format(point.time, 'H時')}
+                    </p>
+                    {getWeatherIcon(point.code)}
+                    <span className="text-base font-bold">{Math.round(point.temp)}°</span>
+                    <div className="flex items-center gap-0.5 text-[10px] font-bold text-blue-500">
+                      <Droplets className="w-2.5 h-2.5" />
                       {point.precip}%
                     </div>
                   </div>
                 ))}
               </div>
-            </section>
-
-            {/* Arbitrary Hour Selector */}
-            <section className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-blue-500" />
-                  <h2 className="text-sm font-bold">時刻をチェック</h2>
-                </div>
-                <div className="bg-slate-50 px-3 py-1 rounded-full text-[10px] font-bold text-slate-400">
-                  {selectedLocation?.isCurrent ? '24h' : '7days'}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-4 bg-slate-50 p-2 rounded-2xl">
-                <button 
-                  onClick={() => adjustOffset(-1)}
-                  className="w-12 h-12 flex items-center justify-center bg-white rounded-xl border border-slate-100 active:scale-95 transition-transform shadow-sm"
-                >
-                  <ChevronLeft className="w-6 h-6 text-slate-600" />
-                </button>
-                
-                <div className="flex-1 text-center">
-                  <p className="text-2xl font-black text-blue-600 tracking-tighter">
-                    {selectedHourOffset}
-                    <span className="text-xs font-bold text-slate-400 ml-1">時間後</span>
-                  </p>
-                  <p className="text-[10px] font-bold text-slate-400">
-                    {format(addHours(new Date(), selectedHourOffset), 'MM/dd HH:00', { locale: ja })}
-                  </p>
-                </div>
-
-                <button 
-                  onClick={() => adjustOffset(1)}
-                  className="w-12 h-12 flex items-center justify-center bg-white rounded-xl border border-slate-100 active:scale-95 transition-transform shadow-sm"
-                >
-                  <ChevronRight className="w-6 h-6 text-slate-600" />
-                </button>
-              </div>
-
-              <input 
-                type="range" 
-                min="1" 
-                max={maxOffset} 
-                value={selectedHourOffset} 
-                onChange={(e) => setSelectedHourOffset(parseInt(e.target.value))}
-                className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-500"
-              />
             </section>
 
             {/* Trend Chart */}
@@ -399,29 +400,29 @@ export default function App() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis 
-                      dataKey="displayTime" 
+                    <XAxis
+                      dataKey="displayTime"
                       axisLine={false}
                       tickLine={false}
                       tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 600 }}
-                      interval={6}
+                      interval={2}
                     />
-                    <Tooltip 
-                      contentStyle={{ 
-                        borderRadius: '16px', 
-                        border: 'none', 
+                    <Tooltip
+                      contentStyle={{
+                        borderRadius: '16px',
+                        border: 'none',
                         boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
                         fontSize: '10px',
                         fontWeight: 'bold'
                       }}
                     />
-                    <Area 
-                      type="monotone" 
-                      dataKey="temp" 
-                      stroke="#f97316" 
+                    <Area
+                      type="monotone"
+                      dataKey="temp"
+                      stroke="#f97316"
                       strokeWidth={3}
-                      fillOpacity={1} 
-                      fill="url(#colorTemp)" 
+                      fillOpacity={1}
+                      fill="url(#colorTemp)"
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -434,13 +435,13 @@ export default function App() {
       {/* Search Overlay */}
       <AnimatePresence>
         {isSearching && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
           >
-            <motion.div 
+            <motion.div
               initial={{ y: "100%" }}
               animate={{ y: 0 }}
               exit={{ y: "100%" }}
@@ -448,7 +449,7 @@ export default function App() {
             >
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-bold">拠点を追加</h3>
-                <button 
+                <button
                   onClick={() => setIsSearching(false)}
                   className="p-2 bg-slate-100 rounded-full text-slate-400"
                 >
@@ -457,16 +458,16 @@ export default function App() {
               </div>
 
               <form onSubmit={handleSearch} className="relative">
-                <input 
+                <input
                   autoFocus
-                  type="text" 
-                  placeholder="都市名を入力 (例: 札幌, London)" 
+                  type="text"
+                  placeholder="都市名を入力 (例: 札幌, London)"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-12 py-4 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 />
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <button 
+                <button
                   type="submit"
                   className="absolute right-3 top-1/2 -translate-y-1/2 bg-blue-500 text-white px-4 py-1.5 rounded-xl text-xs font-bold"
                 >
@@ -482,7 +483,7 @@ export default function App() {
                   </div>
                 ) : searchResults.length > 0 ? (
                   searchResults.map(res => (
-                    <button 
+                    <button
                       key={res.id}
                       onClick={() => addLocation(res)}
                       className="w-full flex items-center justify-between p-4 bg-slate-50 rounded-2xl hover:bg-blue-50 transition-colors group"
@@ -512,21 +513,21 @@ export default function App() {
       {/* Bottom Tab Bar */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-lg border-t border-slate-100 px-6 py-4 z-40">
         <div className="max-w-md mx-auto flex justify-around items-center">
-          <button 
+          <button
             onClick={() => { window.scrollTo({ top: 0, behavior: 'smooth' }); setIsSearching(false); }}
             className="flex flex-col items-center gap-1 text-blue-500"
           >
             <Sun className="w-6 h-6" />
             <span className="text-[10px] font-bold">予報</span>
           </button>
-          <button 
+          <button
             onClick={() => setIsSearching(true)}
             className="flex flex-col items-center gap-1 text-slate-400"
           >
             <Plus className="w-6 h-6" />
             <span className="text-[10px] font-bold">追加</span>
           </button>
-          <button 
+          <button
             onClick={() => fetchWeather(selectedLocation!)}
             className="flex flex-col items-center gap-1 text-slate-400"
           >
