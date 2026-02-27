@@ -27,15 +27,19 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
 
   // Notification states
+  const notifSupported = 'Notification' in window;
   const [notificationsEnabled, setNotificationsEnabled] = useState(() =>
     localStorage.getItem('notifications_enabled') === 'true'
   );
-  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(
-    'Notification' in window ? Notification.permission : 'denied'
-  );
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const notifiedCache = useRef<Set<string>>(new Set(
     JSON.parse(localStorage.getItem(NOTIFIED_KEY) || '[]')
   ));
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   // Search states
   const [isSearching, setIsSearching] = useState(false);
@@ -102,22 +106,32 @@ export default function App() {
   // Notification toggle
   const toggleNotifications = async () => {
     if (!notificationsEnabled) {
-      if (!('Notification' in window)) return;
+      if (!notifSupported) {
+        showToast('このブラウザは通知に対応していません');
+        return;
+      }
+      if (Notification.permission === 'denied') {
+        showToast('通知がブロックされています。ブラウザの設定から許可してください');
+        return;
+      }
       const permission = await Notification.requestPermission();
-      setNotifPermission(permission);
       if (permission === 'granted') {
         setNotificationsEnabled(true);
         localStorage.setItem('notifications_enabled', 'true');
+        showToast('通知をオンにしました ☂️');
+      } else {
+        showToast('通知の許可が得られませんでした');
       }
     } else {
       setNotificationsEnabled(false);
       localStorage.setItem('notifications_enabled', 'false');
+      showToast('通知をオフにしました');
     }
   };
 
   // Check for rain and send browser notification
   const checkAndNotify = useCallback((data: WeatherData, loc: Location, date: Date) => {
-    if (!notificationsEnabled || Notification.permission !== 'granted') return;
+    if (!notificationsEnabled || !notifSupported || Notification.permission !== 'granted') return;
 
     const cacheKey = `${loc.id}_${format(date, 'yyyy-MM-dd')}`;
     if (notifiedCache.current.has(cacheKey)) return;
@@ -247,6 +261,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-24">
+      {/* Toast */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-slate-800 text-white text-sm font-bold px-5 py-3 rounded-2xl shadow-xl whitespace-nowrap"
+          >
+            {toastMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 sticky top-0 z-30 px-4 py-3">
         <div className="max-w-md mx-auto flex items-center justify-between">
