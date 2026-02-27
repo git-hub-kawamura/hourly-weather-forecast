@@ -61,7 +61,7 @@ export default function App() {
   const fetchWeather = async (loc: Location) => {
     try {
       setLoading(true);
-      const days = loc.isCurrent ? 3 : 7;
+      const days = 7;
       const response = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_2m,precipitation_probability,weather_code&current_weather=true&timezone=auto&forecast_days=${days}`
       );
@@ -212,7 +212,7 @@ export default function App() {
   };
 
   const availableDays = useMemo(() => {
-    const days = selectedLocation?.isCurrent ? 3 : 7;
+    const days = 7;
     return Array.from({ length: days }, (_, i) => startOfDay(addDays(new Date(), i)));
   }, [selectedLocation]);
 
