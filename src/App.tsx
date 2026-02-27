@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  Sun, Cloud, CloudRain, Droplets, Thermometer, MapPin,
+  Sun, Droplets, Thermometer, MapPin,
   RefreshCw, Plane, Navigation,
-  Plus, Search, X, Calendar
+  Plus, Search, X, Calendar, Bell, BellOff, Umbrella
 } from 'lucide-react';
 import { format, addDays, isSameDay, parseISO, startOfDay, isToday, isTomorrow } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  AreaChart, Area, XAxis, CartesianGrid, Tooltip,
   ResponsiveContainer
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
@@ -15,6 +15,7 @@ import { WeatherData, Location } from './types/weather';
 import { getWeatherIcon, getWeatherDescription } from './utils/weatherUtils';
 
 const STORAGE_KEY = 'travel_weather_locations';
+const NOTIFIED_KEY = 'notified_cache';
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -25,6 +26,17 @@ export default function App() {
   const [savedLocations, setSavedLocations] = useState<Location[]>([]);
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
 
+  // Notification states
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() =>
+    localStorage.getItem('notifications_enabled') === 'true'
+  );
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(
+    'Notification' in window ? Notification.permission : 'denied'
+  );
+  const notifiedCache = useRef<Set<string>>(new Set(
+    JSON.parse(localStorage.getItem(NOTIFIED_KEY) || '[]')
+  ));
+
   // Search states
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,11 +46,7 @@ export default function App() {
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      try {
-        setSavedLocations(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to parse saved locations', e);
-      }
+      try { setSavedLocations(JSON.parse(saved)); } catch (e) { console.error(e); }
     }
   }, []);
 
@@ -69,10 +77,8 @@ export default function App() {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const loc: Location = {
-            id: 'current',
-            name: '現在地',
-            lat: position.coords.latitude,
-            lon: position.coords.longitude,
+            id: 'current', name: '現在地',
+            lat: position.coords.latitude, lon: position.coords.longitude,
             isCurrent: true
           };
           setCurrentLocation(loc);
@@ -93,6 +99,58 @@ export default function App() {
     }
   }, []);
 
+  // Notification toggle
+  const toggleNotifications = async () => {
+    if (!notificationsEnabled) {
+      if (!('Notification' in window)) return;
+      const permission = await Notification.requestPermission();
+      setNotifPermission(permission);
+      if (permission === 'granted') {
+        setNotificationsEnabled(true);
+        localStorage.setItem('notifications_enabled', 'true');
+      }
+    } else {
+      setNotificationsEnabled(false);
+      localStorage.setItem('notifications_enabled', 'false');
+    }
+  };
+
+  // Check for rain and send browser notification
+  const checkAndNotify = useCallback((data: WeatherData, loc: Location, date: Date) => {
+    if (!notificationsEnabled || Notification.permission !== 'granted') return;
+
+    const cacheKey = `${loc.id}_${format(date, 'yyyy-MM-dd')}`;
+    if (notifiedCache.current.has(cacheKey)) return;
+
+    const dayForecast = data.hourly.time
+      .map((time, i) => ({
+        time: parseISO(time),
+        precip: data.hourly.precipitation_probability[i],
+        code: data.hourly.weather_code[i],
+      }))
+      .filter(d => isSameDay(d.time, date));
+
+    const maxPrecip = Math.max(...dayForecast.map(d => d.precip));
+    const hasRain = dayForecast.some(d => d.code >= 51 || d.code >= 61);
+
+    if (maxPrecip >= 50 || hasRain) {
+      const dateLabel = isToday(date) ? '今日' : isTomorrow(date) ? '明日' : format(date, 'M月d日(E)', { locale: ja });
+      new Notification(`☂️ ${loc.name} — 傘をお忘れなく！`, {
+        body: `${dateLabel}は雨の予報があります（最大降水確率 ${maxPrecip}%）`,
+        icon: '/hourly-weather-forecast/favicon.ico',
+      });
+      notifiedCache.current.add(cacheKey);
+      localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...notifiedCache.current]));
+    }
+  }, [notificationsEnabled]);
+
+  // Trigger notification check when data/date/location changes
+  useEffect(() => {
+    if (weatherData && selectedLocation) {
+      checkAndNotify(weatherData, selectedLocation, selectedDate);
+    }
+  }, [weatherData, selectedDate, selectedLocation, checkAndNotify]);
+
   const handleLocationChange = (loc: Location) => {
     setSelectedLocation(loc);
     setSelectedDate(startOfDay(new Date()));
@@ -103,7 +161,6 @@ export default function App() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-
     try {
       setIsSearchingApi(true);
       const response = await fetch(
@@ -111,13 +168,10 @@ export default function App() {
       );
       const data = await response.json();
       if (data.results) {
-        const results: Location[] = data.results.map((r: any) => ({
-          id: r.id.toString(),
-          name: r.name,
-          lat: r.latitude,
-          lon: r.longitude
-        }));
-        setSearchResults(results);
+        setSearchResults(data.results.map((r: any) => ({
+          id: r.id.toString(), name: r.name,
+          lat: r.latitude, lon: r.longitude
+        })));
       } else {
         setSearchResults([]);
       }
@@ -187,7 +241,8 @@ export default function App() {
     const dominantCode = daytimeHours.length > 0
       ? daytimeHours[Math.floor(daytimeHours.length / 2)].code
       : dayHourlyForecast[0]?.code;
-    return { maxTemp, minTemp, maxPrecip, dominantCode };
+    const hasRain = maxPrecip >= 50 || dayHourlyForecast.some(d => d.code >= 51);
+    return { maxTemp, minTemp, maxPrecip, dominantCode, hasRain };
   }, [dayHourlyForecast]);
 
   return (
@@ -201,12 +256,26 @@ export default function App() {
             </div>
             <span className="font-bold text-lg tracking-tight">TravelWeather</span>
           </div>
-          <button
-            onClick={() => setIsSearching(true)}
-            className="p-2 bg-slate-50 rounded-full text-slate-400 hover:text-blue-500 transition-colors"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Notification Toggle */}
+            <button
+              onClick={toggleNotifications}
+              title={notificationsEnabled ? '通知オン' : '通知オフ'}
+              className={`p-2 rounded-full transition-colors ${
+                notificationsEnabled
+                  ? 'bg-blue-50 text-blue-500'
+                  : 'bg-slate-50 text-slate-400'
+              }`}
+            >
+              {notificationsEnabled ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
+            </button>
+            <button
+              onClick={() => setIsSearching(true)}
+              className="p-2 bg-slate-50 rounded-full text-slate-400 hover:text-blue-500 transition-colors"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -313,22 +382,61 @@ export default function App() {
               <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-4 px-4">
                 {availableDays.map((date) => {
                   const isSelected = isSameDay(date, selectedDate);
+                  // Check if this day has rain for the dot indicator
+                  const dayData = weatherData?.hourly.time
+                    .map((time, i) => ({
+                      time: parseISO(time),
+                      precip: weatherData.hourly.precipitation_probability[i],
+                    }))
+                    .filter(d => isSameDay(d.time, date)) ?? [];
+                  const dayMaxPrecip = dayData.length > 0 ? Math.max(...dayData.map(d => d.precip)) : 0;
+                  const dayHasRain = dayMaxPrecip >= 50;
+
                   return (
                     <button
                       key={date.toISOString()}
                       onClick={() => setSelectedDate(date)}
-                      className={`flex-shrink-0 px-4 py-2.5 rounded-2xl text-sm font-bold transition-all border ${
+                      className={`flex-shrink-0 px-4 py-2.5 rounded-2xl text-sm font-bold transition-all border relative ${
                         isSelected
                           ? 'bg-blue-500 text-white border-blue-400 shadow-md shadow-blue-100'
                           : 'bg-white text-slate-600 border-slate-100'
                       }`}
                     >
                       {formatDateLabel(date)}
+                      {dayHasRain && (
+                        <span className={`absolute -top-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center text-[6px] ${
+                          isSelected ? 'bg-white text-blue-500' : 'bg-blue-400 text-white'
+                        }`}>☂</span>
+                      )}
                     </button>
                   );
                 })}
               </div>
             </section>
+
+            {/* Rain Alert Banner */}
+            <AnimatePresence>
+              {daySummary?.hasRain && (
+                <motion.div
+                  key={`rain-alert-${selectedDate.toISOString()}`}
+                  initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                  className="bg-blue-500 rounded-[24px] p-4 flex items-center gap-4 shadow-lg shadow-blue-100"
+                >
+                  <div className="bg-white/20 p-3 rounded-2xl flex-shrink-0">
+                    <Umbrella className="w-6 h-6 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-black text-white text-sm">☂️ 傘をお忘れなく！</p>
+                    <p className="text-blue-100 text-xs font-bold mt-0.5">
+                      {format(selectedDate, 'M月d日(E)', { locale: ja })}は雨の予報があります
+                      （最大 {daySummary.maxPrecip}%）
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Day Summary */}
             {daySummary && (
@@ -368,14 +476,20 @@ export default function App() {
                 {dayHourlyForecast.map((point, idx) => (
                   <div
                     key={idx}
-                    className="flex-shrink-0 w-20 p-3 rounded-3xl border bg-white border-slate-100 flex flex-col items-center gap-2"
+                    className={`flex-shrink-0 w-20 p-3 rounded-3xl border flex flex-col items-center gap-2 ${
+                      point.precip >= 50
+                        ? 'bg-blue-50 border-blue-100'
+                        : 'bg-white border-slate-100'
+                    }`}
                   >
                     <p className="text-[10px] font-bold text-slate-400">
                       {format(point.time, 'H時')}
                     </p>
                     {getWeatherIcon(point.code)}
                     <span className="text-base font-bold">{Math.round(point.temp)}°</span>
-                    <div className="flex items-center gap-0.5 text-[10px] font-bold text-blue-500">
+                    <div className={`flex items-center gap-0.5 text-[10px] font-bold ${
+                      point.precip >= 50 ? 'text-blue-600' : 'text-blue-400'
+                    }`}>
                       <Droplets className="w-2.5 h-2.5" />
                       {point.precip}%
                     </div>
