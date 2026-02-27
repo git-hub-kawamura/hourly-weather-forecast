@@ -1,0 +1,7 @@
+{
+  "name": "Hourly Weather Forecast",
+  "description": "Get precise hourly weather forecasts for your current location, including temperature, precipitation, and conditions.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
